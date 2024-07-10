@@ -762,15 +762,15 @@ class QEDark:
         Eprefactor = materials[material][1]
         Mcell = materials[material][0]
        
-
+        
         prefactor_crys = 1/Mcell*alpha*me_eV**2 / self.mu_Xe(mX)**2 
         if self.device != 'mps':
             Ei_array = torch.floor(torch.round(Ee_array*10)).int()
         else:
-            Ei_array = Ei_array.cpu().numpy()
             from numpy import round as npround
+            Ee_array_temp = Ee_array.cpu().numpy()
 
-            Ei_array = torch.floor(torch.tensor(npround(Ee_array*10,2))).int()
+            Ei_array = torch.floor(torch.tensor(npround(Ee_array_temp*10,2))).int()
 
 
         Ei_array = Ei_array.cpu().numpy()

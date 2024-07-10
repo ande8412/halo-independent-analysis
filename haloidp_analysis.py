@@ -249,7 +249,7 @@ def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='
             figname = dir+'eta_plot.png'
         plt.savefig(figname, bbox_inches='tight')
 
-    return 
+    return etas,eta_shm
        
 def plot_eta_params(data,name,test_mX,FDMn,plot_shm = False,cross_section=1e-36,halo_params=None):
     import numpy as np
