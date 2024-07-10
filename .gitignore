@@ -1,4 +1,5 @@
 .DS_Store
-./halo_data/*
+halo_data/
 ._*
-
+halo_independent/halo_idp_plots/
+halo_independent/halo_idp_results/
