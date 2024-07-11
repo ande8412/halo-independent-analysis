@@ -1,44 +1,44 @@
 
 import torch
+import numpy as np
+from numpy import loadtxt as loadtxt
+import matplotlib.pyplot as plt
+import pickle
+import os
+
+from tqdm import tqdm
+from copy import deepcopy
+from QEDark3 import QEDark
+from QEDarkConstants import ccms,lightSpeed_kmpers,lightSpeed,sec2yr
 
 
+epsilon = 1e-10
 
+def log_likelihood(signal_rate, background, n_obs):
 
-def log_likelihood(signal_rate,background,n_obs):
-    # log_likelihood = 0
-
-    epsilon = torch.tensor(1e-5,dtype=signal_rate.dtype,device=signal_rate.device)
-    signal_temp = signal_rate + epsilon
-    inside_log = n_obs / (signal_temp+background)
-    inside_log_temp = torch.where(inside_log==0,1,inside_log)
-    inside_log_temp = torch.where(torch.isclose(signal_temp,epsilon,rtol=1e-5),1,inside_log_temp)
-    log_part = n_obs * torch.log(inside_log_temp)
-
+    log_part = n_obs * torch.log((n_obs/(signal_rate + background + epsilon)) + epsilon)
     log_likelihood = signal_rate + background - n_obs + log_part
-
-
     log_likelihood = 2 * torch.sum(log_likelihood)
-
-
     return log_likelihood  
 
-def profile_likelihood(mX,params,materials,FDMn,n_obs_m,QE):
-    nes = torch.arange(1,len(n_obs_m[0])+1,device=params.device)
-    likelihoods = 0
-    for m in range(len(n_obs_m)):
-        signal = QE.vectorized_dRdnE(materials[m],mX,nes,FDMn,'idp',DoScreen=False,isoangle=None,halo_id_params=params)
-        background = torch.zeros_like(signal,device=signal.device)#assume zero background
-        likelihoods+=log_likelihood(signal,background,n_obs_m[m])
 
-    return likelihoods
+def profile_likelihood(mX, params_to_fit, materials, FDMn, observed_rates, QE):
+    
+    # calculate expected rates given the parameters
+    nes = torch.arange(1, len(observed_rates[0])+1, device=params_to_fit.device)
+    likelihoods = 0
+    
+    for material_idx in range(len(materials)):
+        signal = QE.vectorized_dRdnE(materials[material_idx],mX,nes,FDMn,'idp',DoScreen=False,isoangle=None,halo_id_params=params_to_fit)
+        background = torch.zeros_like(signal,device=signal.device)#assume zero background
+        likelihoods+=log_likelihood(signal, background, observed_rates[material_idx])
+
+    return likelihoods # we want to maximize the likelihood
       
 
 
-
-
-
     
-def calculate_chi_squared(mX,n_obs,material,FDMn,_params,QE,epsilon=1e-10):
+def calculate_chi_squared(mX,n_obs,material,FDMn,_params,QE):
     nes = torch.arange(1,len(n_obs)+1)
     signal = QE.vectorized_dRdnE(material,mX,nes,FDMn,'idp',DoScreen=False,isoangle=None,halo_id_params=_params)
 
@@ -49,59 +49,73 @@ def calculate_chi_squared(mX,n_obs,material,FDMn,_params,QE,epsilon=1e-10):
     return torch.sum(chi_2)
 
 
+def monotonicity_constraint(params_to_fit):
+    
+    """
+    Enforce monotonicity of the vector, e.g. params_to_fit
+    
+    Do this by considering the difference of consecituve steps (which should all be negative) and enforcing that the maximum is <=0
+    """
+    
+    max_diff = torch.max(torch.diff(params_to_fit)) # input[i+1] - input[i], so these should all be negative
+    if max_diff <= 0:
+        return 0
+    else:
+        return max_diff**2
+    
+    
+def convert_params_to_fit_to_halo_id(learnable_weights):
+    return -torch.cumsum(learnable_weights**2, dim=0)
 
-
-def minimize(mX,FDMn,n_obs_m,materials,function,initial_parameters,epochs=5,lr=0.001,clip_value=5,device='cpu',optimizer_algorithm='Adam',adaptive=True,fused=False):
-    from tqdm.autonotebook import tqdm
-    from copy import deepcopy
-    from QEDark3 import QEDark
+def minimize(mX, FDMn, observed_rates, materials, loss_function, params_to_fit, epochs=5, lr=0.001, clip_value=5, device='cpu', optimizer_algorithm='Adam', adaptive=True, fused=False, alpha=0.1):
+    
     QE = QEDark()
     QE.change_to_step() #default to step
     QE.optimize(device)
+    
     if device != 'cuda':
         fused = False
+        
     list_params = []
-    params = initial_parameters
-    params.requires_grad_()
+    params_to_fit.requires_grad_()
     if fused:
         print('using fused implementation')
     if optimizer_algorithm == 'Adam':
-        optimizer = torch.optim.Adam([params], lr=lr,fused=fused)
+        optimizer = torch.optim.Adam([params_to_fit], lr=lr,fused=fused)
     elif optimizer_algorithm == 'AdamW':
-        optimizer = torch.optim.AdamW([params], lr=lr,fused=fused)
+        optimizer = torch.optim.AdamW([params_to_fit], lr=lr,fused=fused)
     elif optimizer_algorithm == 'RAdam':
-        optimizer = torch.optim.RAdam([params], lr=lr)
+        optimizer = torch.optim.RAdam([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'SGD':
-        optimizer = torch.optim.SGD([params], lr=lr)
+        optimizer = torch.optim.SGD([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'ASGD':
-        optimizer = torch.optim.ASGD([params], lr=lr)
+        optimizer = torch.optim.ASGD([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'Adamax':
-        optimizer = torch.optim.Adamax([params], lr=lr)
+        optimizer = torch.optim.Adamax([params_to_fit], lr=lr)
     # elif optimizer_algorithm == 'LBFGS':
-    #     optimizer = torch.optim.LBFGS([params], lr=lr)
+    #     optimizer = torch.optim.LBFGS([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'NAdam':
-        optimizer = torch.optim.NAdam([params], lr=lr)
+        optimizer = torch.optim.NAdam([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'Adagrad':
-        optimizer = torch.optim.Adagrad([params], lr=lr)
+        optimizer = torch.optim.Adagrad([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'Adadelta':
-        optimizer = torch.optim.Adadelta([params], lr=lr)
+        optimizer = torch.optim.Adadelta([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'NAdam':
-        optimizer = torch.optim.NAdam([params], lr=lr)
+        optimizer = torch.optim.NAdam([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'RMSprop':
-        optimizer = torch.optim.RMSprop([params], lr=lr)
+        optimizer = torch.optim.RMSprop([params_to_fit], lr=lr)
     elif optimizer_algorithm == 'Rprop':
-        optimizer = torch.optim.Rprop([params], lr=lr)
+        optimizer = torch.optim.Rprop([params_to_fit], lr=lr)
 
     losses = []
     if adaptive:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
     for i in tqdm(range(epochs)):
         optimizer.zero_grad()
-        loss = function(mX,params,materials,FDMn,n_obs_m,QE)
+        loss = loss_function(mX, convert_params_to_fit_to_halo_id(params_to_fit), materials, FDMn, observed_rates, QE) + alpha*monotonicity_constraint(params_to_fit)
 
         loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(params, clip_value)
+        #torch.nn.utils.clip_grad_norm_(params_to_fit, clip_value)
         optimizer.step()
         if adaptive:
             scheduler.step(loss)
@@ -109,88 +123,29 @@ def minimize(mX,FDMn,n_obs_m,materials,function,initial_parameters,epochs=5,lr=0
             print(list_params)
             print('this loss function became nan')
             break
-        list_params.append(deepcopy(params))
+        list_params.append(deepcopy(params_to_fit))
         losses.append(float(loss))
-        # if i > nelements_to_check:
-        #     derivs = torch.diff(torch.tensor(losses))
-        #     derivs = derivs[-nelements_to_check:]
-        #     derivs_check = torch.where(torch.abs(derivs) < 5, 0, derivs)
-        #     if torch.sum(derivs_check) == 0:
-        #         print(f'converged at {i} epochs')
-        #         break
+
     test_statistic = []
-    for m in range(len(materials)):
-        test_stat = calculate_chi_squared(mX,n_obs_m[m],materials[m],FDMn,params,QE)
+    for material_idx in range(len(materials)):
+        test_stat = calculate_chi_squared(mX, observed_rates[material_idx],materials[material_idx],FDMn,convert_params_to_fit_to_halo_id(params_to_fit),QE)
         test_statistic.append(float(test_stat))
-    return params,losses,test_statistic
+    
+    return params_to_fit, losses, test_statistic
 
 
-
-
-
-# def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='./'):
-
-#     import matplotlib.pyplot as plt
-
-#     import numpy as np
-#     from QEDark3 import QEDark
-#     from QEDarkConstants import ccms,lightSpeed_kmpers,lightSpeed
-#     QE = QEDark()
-#     QE.optimize(device)
-
-#     q_tensor = torch.arange(1,QE.nq+1)*QE.dQ
-#     eE_tensor = torch.arange(QE.Emin,QE.Emax,step=QE.dE)
-#     eE_array = np.arange(QE.Emin,QE.Emax,QE.dE)
-#     test_eE = 2
-#     vMax = 1000 / lightSpeed_kmpers
-#     num_steps = params.shape[0]
-#     vMins = QE.DM_Halo.vmin_tensor(eE_tensor,q_tensor,mX*1e6) #units of c
-#     vis = torch.arange(0,vMax,step = vMax/num_steps,device=params.device)
-#     vis_np = np.arange(0,vMax,vMax/num_steps) * lightSpeed_kmpers
-#     etas = torch.exp(params)*1e5#/lightSpeed*1e4#units of s/cm
-#     if etas.device != 'cpu':
-#         etas = etas.to('cpu')
-#     etas_np = etas.detach().numpy()
-
-
-#     fig,ax = plt.subplots(figsize=(15,10))
-#     check_index = np.where(np.isclose(eE_array,test_eE))[0][0]
-#     vMins_indexed = vMins[check_index,:]
-
-#     ax.scatter(vis_np,etas_np ,label='Best Fit η')
-#     if plot_mb:
-#         etas_mb = []
-#         for v in vMins_indexed:
-#             vtest = float(v)
-#             etas_mb.append(QE.DM_Halo.etaSHM(vtest))
-#         etas_mb = np.array(etas_mb)
-#         ax.plot(vMins_indexed* lightSpeed_kmpers,etas_mb *1e5,color='red',label='Simple Halo Model')
-#     ax.legend()
-#     ax.set_ylabel('η (s/km)')
-#     ax.set_xlabel('Vmin (km/s)')
-#     ax.set_xlim([0, 1000])
-
-#     # ax.set_xlim([0, 1000])
-#     if save:
-#         if plotname is not None:
-#             figname = plotname
-#         else:
-#             figname = dir+'eta_plot.png'
-#         plt.savefig(figname, bbox_inches='tight')
-#     return #etas,etas_mb,vMins
 
 def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='./',cross_section = 1e-36,halo_params=None,norm=1e-10):
     #halo_params = [238.0,250.2,544,0.3e9] <- acceptable format to input halo params v0,vE,vEsc,rhoX
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from QEDark3 import QEDark
-    from QEDarkConstants import ccms,lightSpeed_kmpers,lightSpeed,sec2yr
+    
     QE = QEDark()
+    
     if halo_params is not None:
         QE.update_params(halo_params[0],halo_params[1],halo_params[2],halo_params[3],cross_section)
     else:
         QE.update_crosssection(cross_section)
     QE.optimize(device)
+    
     q = np.arange(1,901)*QE.dQ
     vMinimum = np.min(2*1.2 /q + q / (2*mX*1e6))
     vMinimum*=lightSpeed_kmpers
@@ -224,9 +179,6 @@ def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='
         eta_shm = eta_shm[crop]
     etas = etas.cpu().numpy()*norm
 
-
-
-
     
     vMins = vMins[crop]
     etas = etas[crop]
@@ -252,7 +204,6 @@ def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='
     return etas,eta_shm
        
 def plot_eta_params(data,name,test_mX,FDMn,plot_shm = False,cross_section=1e-36,halo_params=None):
-    import numpy as np
     likelihood_fdm0 = []
     test_stats_fdm0 = []
     likelihood_fdm2 = []
@@ -295,10 +246,7 @@ def plot_eta_params(data,name,test_mX,FDMn,plot_shm = False,cross_section=1e-36,
 
 
 def find_best_fit(data_name,model_name,plot_shm = True,zoom=True,log=True,cross_section=1e-36,onlySi=False,halo_params=None,save=False):
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import pickle
-    from haloidp_analysis import plot_eta
+    
     savedir='./halo_independent/halo_idp_plots/'
     #given a data file from a model scan above, 
     #make sure likelihoods converged
@@ -475,13 +423,9 @@ def find_best_fit(data_name,model_name,plot_shm = True,zoom=True,log=True,cross_
     
 
 def mock_data_scan(modelnumber,device,masses=None,onlySi=False,adaptive=False,mock_data_dir='1kgyr_fake_data',optimizer='AdamW'):
-    import pickle
-    import os
-    
+
     print(f'looking at files from {mock_data_dir}')
     fpath_si = f'./halo_independent/{mock_data_dir}/Model{modelnumber}_Si.csv'
-
-    from numpy import loadtxt as loadtxt
     fake_data_si = loadtxt(fpath_si,delimiter=',')
     rates_si = fake_data_si[:,1]
     rates_si = torch.from_numpy(rates_si)
@@ -521,9 +465,7 @@ def mock_data_scan(modelnumber,device,masses=None,onlySi=False,adaptive=False,mo
 
 
 def model_scan(dm_masses,model_rates,materials,num_steps = 100,lr=0.001,epochs=1e5,device='cpu',model_name='ModelName',adaptive=False,optimizer='Adam'):
-    from tqdm.autonotebook import tqdm
-    import pickle
-    import os
+  
     FDMs = [0,2]
     data_dict = {}
     data_dict[FDMs[0]] = {}
@@ -560,10 +502,9 @@ def model_scan(dm_masses,model_rates,materials,num_steps = 100,lr=0.001,epochs=1
 
 
 if __name__ == "__main__":
-    import pickle
     model = 4
     fpath_si = f'./halo_independent/mock_data/Model{model}_Si.csv'
-    from numpy import loadtxt as loadtxt
+    
     device = 'mps'
     fake_data_si = loadtxt(fpath_si,delimiter=',')
     rates_si = fake_data_si[:,1]

@@ -1,13 +1,28 @@
-
 # # from QEDarkConstants import *
 # #attempting to implement QEDark with Pytorch tensors instead
+from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator    
+from QEDarkConstants import lightSpeed,ccms,sec2yr,nq,dQ,Emin,Emax,dE,lightSpeed_kmpers, materials
+from QEDarkConstants import v0, vEarth, vEscape, crosssection, rhoX, k_DPL, q_Tsallis, mP_eV, me_eV, alpha,eps0,alphaS,qTF,omegaP
 
-        
+import torch
+import os
+import re
+import numpy as np
+from numpy import concatenate,arange,array,loadtxt,sort,unique
+from numpy import round as npround
+
+from copy import deepcopy
+
+import tqdm as tqdm
+
+from scipy.integrate import quad, dblquad, nquad
+from scipy.special import erf
+from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator 
+
 
 class DM_Halo_Distributions:
     def __init__(self,V0=None,VEarth=None,VEscape=None,RHOX=None,crosssection=None):
         #inputs in km/s
-        from QEDarkConstants import nq,dQ,Emin,Emax,dE,lightSpeed_kmpers
 
     
         self.nq = nq
@@ -18,34 +33,29 @@ class DM_Halo_Distributions:
         self.device='cpu'
 
         if V0 is None:
-            from QEDarkConstants import v0
             self.v0 = v0/lightSpeed_kmpers
         else:
             self.v0 = V0/lightSpeed_kmpers
 
 
         if VEarth is None:
-            from QEDarkConstants import vEarth
             self.vEarth = vEarth/lightSpeed_kmpers
         else:
             self.vEarth = VEarth/lightSpeed_kmpers
         
         if VEscape is None:
-            from QEDarkConstants import vEscape
             self.vEscape = vEscape/lightSpeed_kmpers
         else:
             self.vEscape = VEscape/lightSpeed_kmpers
 
         if RHOX is None:
-            from QEDarkConstants import rhoX
             self.rhoX = rhoX
         else:
             self.rhoX = RHOX
         if crosssection is None:
-            from QEDarkConstants import crosssection
             self.cross_section = crosssection
 
-        from numpy import concatenate,arange,array
+        
         self.default_masses = concatenate((arange(0.2,0.8,0.025),array([0.9]),arange(1,5,0.05),arange(5,11,1),array([20,50,100,200,500,1000,10000])))*1e6 # in eV
 
 
@@ -55,7 +65,6 @@ class DM_Halo_Distributions:
 
 
     def generate_halo_files(self,mX,model):
-        import numpy as np
         #takes in mass [eV]
         #model is a string key
         #params depends on which halo function you are calling
@@ -109,8 +118,6 @@ class DM_Halo_Distributions:
 
 
     def vmin_tensor(self,Ee_array,q_array,mX):
-        from  QEDarkConstants import lightSpeed,dQ
-        import torch
         # q = qin * alpha *me_eV #this was originally in the code, but the second line was in QEDark. using that instead
         q= q_array*dQ
         q_tiled = torch.tile(q,(len(Ee_array),1))
@@ -131,10 +138,7 @@ class DM_Halo_Distributions:
     #     return (self.v0**2)*np.pi/(2.0*self.vEarth*K)*val
     
     def etaSHM(self,vMin):
-        from scipy.integrate import quad, dblquad, nquad
-        from scipy.special import erf
-        from QEDarkConstants import lightSpeed_kmpers,lightSpeed
-        import numpy as np
+
         """
         Standard Halo Model with sharp cutoff. 
         Fiducial values are v0=220 km/s, vE=232 km/s, vesc= 544 km/s
@@ -171,9 +175,6 @@ class DM_Halo_Distributions:
 
     def eta_MB_tensor(self,vMin_tensor):
         """Integrated Maxwell-Boltzmann Distribution"""
-
-        import torch
-        from QEDarkConstants import lightSpeed
         eta = torch.zeros_like(vMin_tensor,device=self.device)
 
 
@@ -198,9 +199,6 @@ class DM_Halo_Distributions:
 
     def etaTsa(self,vMin):
 
-        from scipy.integrate import nquad
-        from QEDarkConstants import q_Tsallis,lightSpeed
-        import numpy as np
         """
         Tsallis Model, q = .773, v0 = 267.2 km/s, and vesc = 560.8 km/s
         give best fits from arXiv:0902.0009. 
@@ -258,9 +256,7 @@ class DM_Halo_Distributions:
 
 
     def etaDPL(self,vMin):
-        from QEDarkConstants import k_DPL,lightSpeed
-        from scipy.integrate import nquad
-        import numpy as np
+
         """
         Double Power Law Profile, 1.5 <= k <= 3.5 found to give best fit to N-body
         simulations. 
@@ -306,8 +302,6 @@ class DM_Halo_Distributions:
 
     def step_function_eta(self,vMins, params):
         #vMins is 2d array
-        import torch
-        from QEDarkConstants import lightSpeed,lightSpeed_kmpers
         num_steps = params.shape[0]
         # vMax = (vEarth + vEscape)*1.1 #can change this later
         vMax = 1000 #km /s
@@ -340,7 +334,7 @@ class DM_Halo_Distributions:
 
 class QEDark:
     def __init__(self):
-        from QEDarkConstants import v0,vEarth,vEscape,rhoX,crosssection,nq,dQ,Emin,Emax,dE
+
         self.v0 = v0
         self.vEarth = vEarth
         self.vEscape = vEscape
@@ -436,7 +430,6 @@ class QEDark:
 
 
     def FDM(self,q_eV,n):
-        from QEDarkConstants import alpha,me_eV
         """
         DM form factor
         n = 0: FDM=1, heavy mediator
@@ -446,22 +439,19 @@ class QEDark:
         return (alpha*me_eV/q_eV)**n
 
     def mu_Xe(self,mX):
-        from QEDarkConstants import me_eV
         """
         DM-electron reduced mass
         """
         return mX*me_eV/(mX+me_eV)
 
     def mu_XP(self,mX):
-        from QEDarkConstants import mP_eV
         """
         DM-proton reduced mass
         """
         return mX*mP_eV/(mX+mP_eV)
 
     def TFscreening(self,q_arr, E_array, DoScreen):
-        from QEDarkConstants import eps0,alphaS,qTF,me_eV,omegaP
-        import torch
+        
         q_arr_tiled= torch.tile(q_arr,(len(E_array),1))
         if DoScreen==True:
             E_array_tiled= torch.tile(E_array,(len(q_arr),1)).T
@@ -471,17 +461,13 @@ class QEDark:
             return torch.ones_like(q_arr_tiled)
 
     def get_halo_data(self,mX,q_tensor,Ee_tensor,FDMn,halo_model,isoangle=None,halo_id_params=None,forceCalculate=False,useVerne=False,calcErrors=None):
-        from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator    
-        from QEDarkConstants import lightSpeed,ccms,sec2yr  
-        import torch
-        import os
-        import re
 
         
         mass_string = mX*1e-6 #turn into MeV
 
         mass_string = float(mass_string)
-        from numpy import round as npround
+
+
         mass_string = npround(mass_string,3)
         if isoangle is None:
             if mass_string.is_integer():
@@ -541,7 +527,7 @@ class QEDark:
                     masses.append(mass)
                     cross_sections.append(cross_section)
   
-            from numpy import sort,unique
+
             cross_sections = sort(unique(cross_sections))
             masses = unique(masses)
 
@@ -614,7 +600,7 @@ class QEDark:
                 # generate_halo_files(mX,crosssection,halo_model,Emin,Emax,dE)
             file = f'./halo_data/{halo_model}/mDM_{mass_string}_MeV.txt'
             # print(f'found halo file: {file}')
-        from numpy import loadtxt
+
         try:
             data = loadtxt(file,delimiter='\t')
         except ValueError:
@@ -649,7 +635,7 @@ class QEDark:
         eta_func = Akima1DInterpolator(file_vmins,file_etas)
         vMins = self.DM_Halo.vmin_tensor(Ee_tensor,q_tensor,mX)
         if isoangle is not None:
-            from QEDarkConstants import lightSpeed_kmpers
+
             vMin_conversion_factor = lightSpeed_kmpers
             eta_conversion_factor  = 1e-5 #km/cm 
         else:
@@ -687,10 +673,6 @@ class QEDark:
         return etas
         
     def p100_function(self,x_values,ne,material):
-        from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator 
-        from numpy import loadtxt
-        import torch
-        from copy import deepcopy
 
         
         p100data = loadtxt('./p100K.dat')
@@ -710,27 +692,9 @@ class QEDark:
         y_values = y_values.to(self.device)
         
 
-
-        # pEV = pEV[::2]
-        # probs = probs[::2]
-
-
-        
-        # x_temp = x_temp.astype(pEV.dtype)
-        # x_temp = np.round(x_temp,2)
-        # y_values = np.zeros_like(x_temp)
-
-
-
-        # indices = np.argwhere(np.in1d(x_temp,pEV)).T
-        # y_values[indices] = probs[indices]
-        # y_values = torch.from_numpy(y_values)
         return y_values
 
     def step_function(self,x_values,ne,material):
-        from QEDarkConstants import materials
-        import torch
-        # from copy import deepcopy
         start = materials[material][2]
         y_values = torch.zeros_like(x_values,device=self.device)
         bin_size =  materials[material][3]
@@ -749,8 +713,7 @@ class QEDark:
 
 
     def vectorized_dRdE(self,material, mX, Ee_array, FDMn,halo_model,DoScreen=False,isoangle=None,halo_id_params=None,forceCalculate=False,useVerne=False,calcError=None):
-        import torch
-        from QEDarkConstants import materials,ccms,sec2yr,alpha,me_eV
+
         # print(halo_id_params,'just passing them in to see (dRdE)')
         q_array = torch.arange(1,self.nq+1,device=self.device)
         q_array_denom = torch.clone(q_array) * self.dQ
@@ -767,7 +730,8 @@ class QEDark:
         if self.device != 'mps':
             Ei_array = torch.floor(torch.round(Ee_array*10)).int()
         else:
-            from numpy import round as npround
+           
+
             Ee_array_temp = Ee_array.cpu().numpy()
 
             Ei_array = torch.floor(torch.tensor(npround(Ee_array_temp*10,2))).int()
@@ -819,10 +783,6 @@ class QEDark:
 
     def vectorized_dRdnE(self,material,mX,ne,FDMn,halo_model,DoScreen=False,isoangle=None,halo_id_params=None,forceCalculate=False,useVerne=False,calcError=None):
         #possible options for calcError None, High, Low
-        import torch
-        import numpy
-        #takes in mass in MeV
-        from QEDarkConstants import materials
 
 
 
@@ -830,8 +790,6 @@ class QEDark:
             if self.ionization_func is not self.step_function:
                 self.change_to_step()
         # self.update_Emin(materials[material][2])
-
-
 
 
         if type(ne) != torch.Tensor:
@@ -879,7 +837,6 @@ class QEDark:
 
     # def vectorized_dRdnE(material,mX,ne,FDMn,halo_model,ionization_function,DoScreen=False,isoangle=None,halo_id_params=None):
     #     from QEDarkConstants import Emin,Emax,dE
-    #     import torch
     #     # print(halo_id_params)
     #     Ee_array = torch.arange(Emin,Emax,step = dE)
     #     Ee_array=torch.round(Ee_array,decimals=2)
@@ -899,13 +856,9 @@ class QEDark:
 
 
     def generate_dat(self,dm_masses,ne_bins,fdm,dm_halo_model,material,DoScreen=False,write=True):
-        from tqdm.notebook import tqdm_notebook
-        from QEDarkConstants import lightSpeed_kmpers
-        import numpy as np
         function_name = str(self.ionization_func).strip('<<bound method QEDark.')[:4]
         fdm_dict = {0:'1',1:'q',2:'q2'}
         #FDM1_vesc544-v0220-vE232-Ebin3pt8-rhoX0pt4_nevents.dat
-        from QEDarkConstants import materials
         rho_X =self.rhoX
         
         vE = self.vEarth 
