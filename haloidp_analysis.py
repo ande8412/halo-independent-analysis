@@ -34,7 +34,6 @@ def profile_likelihood(mX, params_to_fit, materials, FDMn, observed_rates, QE):
         likelihoods+=log_likelihood(signal, background, observed_rates[material_idx])
 
     return likelihoods # we want to maximize the likelihood
-      
 
 
     
@@ -49,19 +48,7 @@ def calculate_chi_squared(mX,n_obs,material,FDMn,_params,QE):
     return torch.sum(chi_2)
 
 
-def monotonicity_constraint(params_to_fit):
-    
-    """
-    Enforce monotonicity of the vector, e.g. params_to_fit
-    
-    Do this by considering the difference of consecituve steps (which should all be negative) and enforcing that the maximum is <=0
-    """
-    
-    max_diff = torch.max(torch.diff(params_to_fit)) # input[i+1] - input[i], so these should all be negative
-    if max_diff <= 0:
-        return 0
-    else:
-        return max_diff**2
+
     
     
 def convert_params_to_fit_to_halo_id(learnable_weights):
@@ -133,6 +120,61 @@ def minimize(mX, FDMn, observed_rates, materials, loss_function, params_to_fit, 
     
     return params_to_fit, losses, test_statistic
 
+
+def minimize_with_mass(FDMn, observed_rates, materials, loss_function, params_to_fit, mass_to_fit, epochs=5, lr=0.001, clip_value=5, device='cpu', optimizer_algorithm='Adam', adaptive=True, fused=False, alpha=1):
+    
+    QE = QEDark()
+    QE.change_to_step() #default to step
+    QE.optimize(device)
+    
+    if device != 'cuda':
+        fused = False
+        
+    params_to_fit.requires_grad_()
+    mass_to_fit.requires_grad_()
+    
+    
+    if fused:
+        print('using fused implementation')
+    if optimizer_algorithm == 'Adam':
+        optimizer_g = torch.optim.Adam([params_to_fit], lr=lr,fused=fused)
+        optimizer_mass = torch.optim.Adam([mass_to_fit], lr=alpha*lr,fused=fused)
+
+    losses = []
+    masses = []
+    
+    if adaptive:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_g, 'min')
+    for i in tqdm(range(epochs)):
+        
+        
+        optimizer_g.zero_grad()
+        optimizer_mass.zero_grad()
+        
+        loss = loss_function(mass_to_fit**2, convert_params_to_fit_to_halo_id(params_to_fit), materials, FDMn, observed_rates, QE)
+        
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(params_to_fit, clip_value)
+        torch.nn.utils.clip_grad_norm_(mass_to_fit, clip_value)
+
+        optimizer_g.step()
+        optimizer_mass.step()
+        
+        
+        if adaptive:
+            scheduler.step(loss)
+    
+        if torch.isnan(loss):
+            print(list_params)
+            print('this loss function became nan')
+            break
+            
+        losses.append(float(loss))
+        masses.append(float(mass_to_fit**2))
+        
+
+    return params_to_fit, losses, masses
 
 
 def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='./',cross_section = 1e-36,halo_params=None,norm=1e-10):
