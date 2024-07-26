@@ -310,7 +310,7 @@ class DM_Halo_Distributions:
         vis = torch.arange(0,vMax,step = vMax/num_steps,device=self.device)
         if params.device == 'mps':
             params
-        step_heights = torch.exp(params)
+        step_heights = params#torch.exp(params)
 
 
         vMins_tiled = torch.tile(vMins[:,:,None],(1,1,num_steps))
