@@ -177,7 +177,7 @@ def minimize_with_mass(FDMn, observed_rates, materials, loss_function, params_to
     return params_to_fit, losses, masses
 
 
-def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='./',cross_section = 1e-36,halo_params=None,norm=1e-10):
+def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='./',cross_section = 1e-36,halo_params=None,norm=1e-10,show_plot=True):
     #halo_params = [238.0,250.2,544,0.3e9] <- acceptable format to input halo params v0,vE,vEsc,rhoX
     
     QE = QEDark()
@@ -206,7 +206,7 @@ def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='
     vis_tiled.shape,vMins_tiled.shape,step_heights_tiled.shape
     etas =  torch.sum(step_heights_tiled * heaviside,axis=1).T
 
-    fig,ax = plt.subplots(figsize=(15,10))
+    
 
     vMins*=lightSpeed_kmpers
     vMins = vMins.cpu().numpy()
@@ -225,25 +225,27 @@ def plot_eta(mX,params,plot_mb =True,device='cpu',save=False,plotname=None,dir='
     vMins = vMins[crop]
     etas = etas[crop]
     
-    if plot_mb:
-        ax.plot(vMins,eta_shm,label='SHM')
-        ax.scatter(vMins,etas,label='Best Fit η',color='red')
-    else:
-        ax.plot(vMins,etas,label='Best Fit η')
-    ax.legend()
-    ax.set_ylabel('η (s/km)')
-    ax.set_xlabel('Vmin (km/s)')
-
-    fig.suptitle(f'Best Fit Eta Mass {mX} MeV',fontsize=32)
-    plt.tight_layout()
-    if save:
-        if plotname is not None:
-            figname = dir + plotname
+    if show_plot:
+        fig,ax = plt.subplots(figsize=(15,10))
+        if plot_mb:
+            ax.plot(vMins,eta_shm,label='SHM')
+            ax.scatter(vMins,etas,label='Best Fit η',color='red')
         else:
-            figname = dir+'eta_plot.png'
-        plt.savefig(figname, bbox_inches='tight')
+            ax.plot(vMins,etas,label='Best Fit η')
+        ax.legend()
+        ax.set_ylabel('η (s/km)')
+        ax.set_xlabel('Vmin (km/s)')
 
-    return etas,eta_shm
+        fig.suptitle(f'Best Fit Eta Mass {mX} MeV',fontsize=32)
+        plt.tight_layout()
+        if save:
+            if plotname is not None:
+                figname = dir + plotname
+            else:
+                figname = dir+'eta_plot.png'
+            plt.savefig(figname, bbox_inches='tight')
+
+    return vMins,etas,eta_shm
        
 def plot_eta_params(data,name,test_mX,FDMn,plot_shm = False,cross_section=1e-36,halo_params=None):
     likelihood_fdm0 = []
